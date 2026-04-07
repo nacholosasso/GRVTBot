@@ -9,7 +9,7 @@
 // To opt out (for tests, or if the v2 surface should be disabled): just
 // don't call mountV2().
 
-import type { Express, Router } from 'express';
+import type { Router } from 'express';
 import type { Server as HttpServer } from 'node:http';
 import type { EventEmitter } from 'node:events';
 import type Database from 'sqlite3';
@@ -30,6 +30,22 @@ interface GrvtClient {
   getKlines(instrument: string, interval?: string, limit?: number): Promise<unknown[]>;
 }
 
+// Structural type for the engine ops the router needs (mutations).
+// Same shape as the one in v2-router.ts EngineOps.
+interface EngineOps {
+  createBot(config: {
+    pair: string;
+    direction: 'long' | 'short';
+    leverage: number;
+    lowerPrice: number;
+    upperPrice: number;
+    numGrids: number;
+    investmentUSDT: number;
+  }): Promise<number>;
+  startBot(botId: number): Promise<void>;
+  pauseBot(botId: number): Promise<void>;
+}
+
 export interface MountV2Options {
   /**
    * Receives the constructed v2 REST router. The legacy server.ts uses this
@@ -42,7 +58,11 @@ export interface MountV2Options {
   httpServer: HttpServer;
   db: Database.Database;
   grvtClient: GrvtClient;
-  engine: EventEmitter;
+  // The full engine — used as an EventEmitter for the dispatcher AND as
+  // the source of mutation ops (createBot/startBot/pauseBot) for the
+  // router. We accept it as `EventEmitter & EngineOps` so callers can
+  // pass `gridEngine` directly without casts.
+  engine: EventEmitter & EngineOps;
   apiKey: string;
 }
 
@@ -61,6 +81,7 @@ export function mountV2(opts: MountV2Options): V2Handles {
   const router = createV2Router({
     db: opts.db,
     grvtClient: opts.grvtClient,
+    engineOps: opts.engine,
     apiKey: opts.apiKey
   });
   opts.setRouter(router);

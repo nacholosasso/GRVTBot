@@ -117,6 +117,25 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  // Mutations — these touch real money. The wizard "Create" button calls
+  // createBot (status='paused'); the user must explicitly start it from
+  // the bot detail page after reviewing the bot in the UI.
+  createBot: (input: ValidateBotInput) =>
+    request<{ id: number; status: 'paused' }>('/bots', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  startBot: (id: number) =>
+    request<{ id: number; status: 'running' }>(`/bots/${id}/start`, {
+      method: 'POST',
+    }),
+
+  pauseBot: (id: number) =>
+    request<{ id: number; status: 'paused' }>(`/bots/${id}/pause`, {
+      method: 'POST',
+    }),
+
   getCandles: (
     pair: string,
     interval: CandleInterval = 'CI_1_H',

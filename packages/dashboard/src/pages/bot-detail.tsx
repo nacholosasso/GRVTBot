@@ -1,9 +1,11 @@
 // Bot Detail page — GridChart hero + 6-card stat strip + secondary equity
 // curve / stats panel + tabs for Fills/Snapshots.
 
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { Pause, Play } from 'lucide-react';
+import { toast } from 'sonner';
 import { api } from '@/lib/api-client';
 import type {
   DailySnapshot,
@@ -21,6 +23,7 @@ import {
   formatTimeUtc,
   formatUsd,
 } from '@/lib/format';
+import { Button } from '@/components/primitives/button';
 import { Card } from '@/components/primitives/card';
 import { Mono } from '@/components/primitives/mono';
 import { StatCard } from '@/components/primitives/stat-card';
@@ -153,17 +156,84 @@ export function BotDetailPage() {
   const candles = candlesQuery.data?.candles ?? [];
   const levels: GridLevel[] = gridStateQuery.data?.levels ?? [];
 
+  // Mutations: Start/Pause. Both invalidate the bot list + this bot's
+  // grid-state so the UI reflects the new status immediately.
+  const startMutation = useMutation({
+    mutationFn: () => api.startBot(botId),
+    onSuccess: () => {
+      toast.success(`Bot ${botId} started`);
+      void queryClient.invalidateQueries({ queryKey: ['bot', botId] });
+      void queryClient.invalidateQueries({ queryKey: ['bots'] });
+      void queryClient.invalidateQueries({ queryKey: ['gridState', botId] });
+    },
+    onError: (err: Error) => toast.error(`Start failed: ${err.message}`),
+  });
+
+  const pauseMutation = useMutation({
+    mutationFn: () => api.pauseBot(botId),
+    onSuccess: () => {
+      toast.success(`Bot ${botId} paused (orders cancelled on GRVT)`);
+      void queryClient.invalidateQueries({ queryKey: ['bot', botId] });
+      void queryClient.invalidateQueries({ queryKey: ['bots'] });
+      void queryClient.invalidateQueries({ queryKey: ['gridState', botId] });
+    },
+    onError: (err: Error) => toast.error(`Pause failed: ${err.message}`),
+  });
+
+  function handleStart() {
+    if (
+      !window.confirm(
+        `Start bot ${botId}?\n\nThis will place real orders on GRVT for ${bot.pair} ${bot.direction} ${bot.leverage}x with ${bot.investment_usdt.toFixed(2)} USDT.`
+      )
+    )
+      return;
+    startMutation.mutate();
+  }
+
+  function handlePause() {
+    if (
+      !window.confirm(
+        `Pause bot ${botId}?\n\nThis will CANCEL ALL open orders on GRVT for ${bot.pair}. The position itself will not be closed — only the limit orders. You can resume later with Start.`
+      )
+    )
+      return;
+    pauseMutation.mutate();
+  }
+
   return (
     <div className="flex flex-col gap-6">
       {/* Page header */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Bot {bot.id}
-        </h1>
-        <StatusPill status={status} />
-        <span className="text-sm text-text-muted">
-          {bot.pair} · {bot.direction.toUpperCase()} · {bot.leverage}x
-        </span>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Bot {bot.id}
+          </h1>
+          <StatusPill status={status} />
+          <span className="text-sm text-text-muted">
+            {bot.pair} · {bot.direction.toUpperCase()} · {bot.leverage}x
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {status === 'running' ? (
+            <Button
+              variant="secondary"
+              onClick={handlePause}
+              disabled={pauseMutation.isPending}
+            >
+              <Pause className="size-4" />
+              {pauseMutation.isPending ? 'Pausing…' : 'Pause'}
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              onClick={handleStart}
+              disabled={startMutation.isPending}
+            >
+              <Play className="size-4" />
+              {startMutation.isPending ? 'Starting…' : 'Start'}
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Top stat strip */}

@@ -28,9 +28,26 @@ interface GrvtClient {
   getKlines(instrument: string, interval?: string, limit?: number): Promise<unknown[]>;
 }
 
+// Structural type for the engine operations the router needs.
+// We don't import GridEngine directly to keep this layer free of cycles.
+interface EngineOps {
+  createBot(config: {
+    pair: string;
+    direction: 'long' | 'short';
+    leverage: number;
+    lowerPrice: number;
+    upperPrice: number;
+    numGrids: number;
+    investmentUSDT: number;
+  }): Promise<number>;
+  startBot(botId: number): Promise<void>;
+  pauseBot(botId: number): Promise<void>;
+}
+
 export interface V2RouterDeps {
   db: Database.Database;
   grvtClient: GrvtClient;
+  engineOps: EngineOps;
   apiKey: string;
 }
 
@@ -81,7 +98,7 @@ function asyncHandler(fn: AsyncHandler) {
 
 // ─── The router ────────────────────────────────────────────────────────
 export function createV2Router(deps: V2RouterDeps): Router {
-  const { db, grvtClient, apiKey } = deps;
+  const { db, grvtClient, engineOps, apiKey } = deps;
   const router = Router();
 
   // All endpoints below require API key
@@ -410,6 +427,119 @@ export function createV2Router(deps: V2RouterDeps): Router {
         ...(leverage > 20 ? ['leverage > 20x: liquidation risk is high'] : []),
       ],
     });
+    return;
+  }));
+
+  // ── POST /api/v2/bots ─────────────────────────────────────────────
+  // Create a new grid bot. The bot is always created in 'paused' state —
+  // no orders are placed on GRVT until the user explicitly starts it via
+  // POST /api/v2/bots/:id/start. This decouples "configure" from "trade"
+  // so a bad config can never accidentally launch real orders.
+  //
+  // Re-validates the input server-side (the wizard already calls
+  // /bots/validate but never trust the client).
+  router.post('/bots', asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as Partial<{
+      pair: string;
+      direction: 'long' | 'short';
+      lower_price: number;
+      upper_price: number;
+      num_grids: number;
+      investment_usdt: number;
+      leverage: number;
+    }>;
+
+    const errors: string[] = [];
+    const pair = String(body.pair ?? '').trim();
+    if (!pair) errors.push('pair is required');
+    const direction = body.direction === 'short' ? 'short' : 'long';
+    const lower = Number(body.lower_price);
+    const upper = Number(body.upper_price);
+    const grids = Number(body.num_grids);
+    const investment = Number(body.investment_usdt);
+    const leverage = Number(body.leverage);
+
+    if (!Number.isFinite(lower) || lower <= 0) errors.push('lower_price must be > 0');
+    if (!Number.isFinite(upper) || upper <= 0) errors.push('upper_price must be > 0');
+    if (lower >= upper) errors.push('lower_price must be < upper_price');
+    if (!Number.isInteger(grids) || grids < 2 || grids > 95) {
+      errors.push('num_grids must be an integer between 2 and 95');
+    }
+    if (!Number.isFinite(investment) || investment <= 0) errors.push('investment_usdt must be > 0');
+    if (!Number.isFinite(leverage) || leverage < 1 || leverage > 50) {
+      errors.push('leverage must be between 1 and 50');
+    }
+    if (errors.length > 0) {
+      return res.status(400).json({ error: 'validation_failed', errors });
+    }
+
+    try {
+      const botId = await engineOps.createBot({
+        pair,
+        direction,
+        leverage,
+        lowerPrice: lower,
+        upperPrice: upper,
+        numGrids: grids,
+        investmentUSDT: investment,
+      });
+      log.info({ botId, pair, direction, leverage, grids }, 'bot created (paused)');
+      // Invalidate the bots cache so the next /bots GET sees the new row.
+      cache.invalidatePrefix('bots');
+      res.status(201).json({ id: botId, status: 'paused' });
+    } catch (err) {
+      log.error({ err: (err as Error).message }, 'bot creation failed');
+      res.status(500).json({
+        error: 'create_failed',
+        message: (err as Error).message,
+      });
+    }
+    return;
+  }));
+
+  // ── POST /api/v2/bots/:id/start ───────────────────────────────────
+  // Start a paused bot. The engine's startBot() detects existing GRVT
+  // state (orders + position) and either RESUMES (rebinds without new
+  // orders) or FRESH-STARTS (places initial orders). The reentrant guard
+  // shipped in commit 1936367 prevents accidental double-bootstrap.
+  router.post('/bots/:id/start', asyncHandler(async (req, res) => {
+    const id = parseInt(String(req.params.id ?? ''), 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid bot id' });
+    try {
+      await engineOps.startBot(id);
+      log.info({ botId: id }, 'bot started via API');
+      cache.invalidatePrefix('bots');
+      res.json({ id, status: 'running' });
+    } catch (err) {
+      log.error({ botId: id, err: (err as Error).message }, 'bot start failed');
+      res.status(500).json({
+        error: 'start_failed',
+        message: (err as Error).message,
+      });
+    }
+    return;
+  }));
+
+  // ── POST /api/v2/bots/:id/pause ───────────────────────────────────
+  // Pause a running bot. The engine's pauseBot() cancels all open orders
+  // on GRVT before flipping the DB status — call this when you want to
+  // STOP trading but keep the bot's history. Use it before any config
+  // change.
+  router.post('/bots/:id/pause', asyncHandler(async (req, res) => {
+    const id = parseInt(String(req.params.id ?? ''), 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid bot id' });
+    try {
+      await engineOps.pauseBot(id);
+      log.info({ botId: id }, 'bot paused via API');
+      cache.invalidatePrefix('bots');
+      res.json({ id, status: 'paused' });
+    } catch (err) {
+      log.error({ botId: id, err: (err as Error).message }, 'bot pause failed');
+      res.status(500).json({
+        error: 'pause_failed',
+        message: (err as Error).message,
+      });
+    }
     return;
   }));
 

@@ -2,13 +2,19 @@
 //
 // Steps: Pair → Range → Config → Confirm
 //
-// Posts to /api/v2/bots/validate (DRY RUN — does NOT actually create a bot
-// in B.5; that wiring lands in B.5.1 once we've validated the wizard against
-// the live engine. The "Create" button currently shows the validated config
-// and reminds the user that bot creation is CLI-only for now).
+// Step 4 calls /bots/validate to compute the live preview, then on Confirm
+// calls POST /bots which creates the bot in 'paused' state. The user is
+// then navigated to the new bot's detail page where they can review the
+// grid and explicitly Start it.
+//
+// Why paused-by-default: the engine's startBot() places real orders on
+// GRVT. We don't want a misclick on "Create" to immediately spend money.
 
 import { useState, type ReactNode } from 'react';
 import { useMutation } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Modal } from './primitives/modal';
 import { Button } from './primitives/button';
@@ -63,11 +69,29 @@ export function CreateBotWizard({ open, onClose }: CreateBotWizardProps) {
   const [step, setStep] = useState<Step>(0);
   const [state, setState] = useState<WizardState>(INITIAL_STATE);
   const [validated, setValidated] = useState<ValidateBotResult | null>(null);
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const validateMutation = useMutation({
     mutationFn: (input: ValidateBotInput) => api.validateBot(input),
     onSuccess: (result) => {
       setValidated(result);
+    },
+  });
+
+  const createMutation = useMutation({
+    mutationFn: (input: ValidateBotInput) => api.createBot(input),
+    onSuccess: (result) => {
+      toast.success(`Bot ${result.id} created (paused). Review and Start when ready.`);
+      // Refresh the bots list so the new card appears immediately on Overview.
+      void queryClient.invalidateQueries({ queryKey: ['bots'] });
+      // Navigate to the new bot's detail page so the user can review +
+      // explicitly press Start.
+      navigate(`/bots/${result.id}`);
+      handleClose();
+    },
+    onError: (err: Error) => {
+      toast.error(`Bot creation failed: ${err.message}`);
     },
   });
 
@@ -77,7 +101,21 @@ export function CreateBotWizard({ open, onClose }: CreateBotWizardProps) {
     setState(INITIAL_STATE);
     setValidated(null);
     validateMutation.reset();
+    createMutation.reset();
     onClose();
+  }
+
+  function handleCreate() {
+    if (!validated) return;
+    createMutation.mutate({
+      pair: validated.pair,
+      direction: validated.direction,
+      lower_price: validated.input.lower,
+      upper_price: validated.input.upper,
+      num_grids: validated.input.grids,
+      investment_usdt: validated.input.investment,
+      leverage: validated.input.leverage,
+    });
   }
 
   function update<K extends keyof WizardState>(key: K, value: WizardState[K]) {
@@ -149,11 +187,11 @@ export function CreateBotWizard({ open, onClose }: CreateBotWizardProps) {
           ) : (
             <Button
               variant="primary"
-              disabled={!canNext}
-              onClick={() => alert('Bot creation lands in B.5.1 — wizard preview validated.')}
+              disabled={!canNext || createMutation.isPending}
+              onClick={handleCreate}
             >
               <Check className="size-4" />
-              Create bot (paused)
+              {createMutation.isPending ? 'Creating…' : 'Create bot (paused)'}
             </Button>
           )}
         </>
@@ -487,8 +525,9 @@ function StepConfirm({
       )}
 
       <div className="rounded-md border border-border-default bg-bg-surface p-3 text-xs text-text-muted">
-        ⓘ B.5 ships the wizard as a <strong className="text-text-secondary">validated preview</strong>.
-        Actual bot creation goes live in B.5.1 after testnet smoke testing.
+        ⓘ The bot will be created in <strong className="text-text-secondary">paused</strong>{' '}
+        state. No orders will be placed on GRVT until you explicitly press
+        Start from the bot detail page after reviewing the configuration.
       </div>
 
       <label className="flex items-start gap-2 text-xs text-text-secondary cursor-pointer">
