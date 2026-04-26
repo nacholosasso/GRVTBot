@@ -13,13 +13,14 @@
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import type Database from 'sqlite3';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { childLogger } from './logger.js';
 import { cache } from './cache.js';
 import type { GridBotDB } from '../database/db.js';
 import { hashPassword, verifyPassword } from '../auth/passwords.js';
 import { signToken, verifyToken } from '../auth/jwt.js';
 import { encryptCredentialFields } from '../auth/crypto.js';
+import { sendPasswordResetEmail, isMailerConfigured } from '../mail/mailer.js';
 import { GRVTClient, type GrvtClientCreds } from '../api/client.js';
 import { invalidateGrvtClient } from '../api/grvt-client-factory.js';
 
@@ -329,6 +330,100 @@ export function createV2Router(deps: V2RouterDeps): Router {
   router.get('/auth/tos', (_req, res) => {
     res.json({ version: SIGNUP_TOS_VERSION, text: SIGNUP_TOS_TEXT });
   });
+
+  // E.9 — Password reset.
+  //
+  // Two endpoints, both PUBLIC (must work without a JWT):
+  //   POST /auth/forgot-password   { email }                -> always 200
+  //   POST /auth/reset-password    { token, new_password }  -> 200 / 400
+  //
+  // forgot-password never reveals whether the email exists (no enum).
+  // We always answer with `{ ok: true, mailed: bool }`. `mailed` is true
+  // only when SMTP is configured AND the email matched a user — but the
+  // distinction between "no user" and "user but smtp off" is not exposed
+  // to attackers because we always check `mailed === true` server-side
+  // only.
+  //
+  // Token storage: SHA-256 hashed in DB, raw value sent by email. 1h TTL,
+  // single-use, and any new request invalidates previous open tokens.
+  const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+  const RESET_TOKEN_TTL_MIN = 60;
+
+  router.post('/auth/forgot-password', asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as { email?: unknown };
+    const email = String(body.email ?? '').trim().toLowerCase();
+    // Cheap shape check — do not bail with detailed error since that
+    // would be an enumeration channel. Just respond 200.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      res.json({ ok: true });
+      return;
+    }
+    const user = await gridBotDb.getUserByEmail(email);
+    if (!user) {
+      // Don't reveal that the email is unknown.
+      log.info({ email }, 'forgot-password requested for unknown email');
+      res.json({ ok: true });
+      return;
+    }
+    // Invalidate any previous open token so only the latest is valid.
+    await gridBotDb.invalidateOpenPasswordResetTokensForUser(user.id);
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = Date.now() + RESET_TOKEN_TTL_MS;
+    const ipAddress =
+      (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ||
+      req.ip ||
+      null;
+    await gridBotDb.insertPasswordResetToken({
+      user_id: user.id,
+      token_hash: tokenHash,
+      expires_at: expiresAt,
+      ip_address: ipAddress,
+    });
+    const baseUrl = (process.env.APP_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    const resetUrl = `${baseUrl}/dashboard/reset-password?token=${rawToken}`;
+    try {
+      await sendPasswordResetEmail({
+        to: user.email,
+        resetUrl,
+        expiresInMinutes: RESET_TOKEN_TTL_MIN,
+      });
+    } catch (err) {
+      // Don't fail the request — user already sees a generic OK and
+      // the token row is in the DB. Log with the URL so an admin can
+      // recover by hand if the SMTP transport is broken.
+      log.error({ err, userId: user.id, resetUrl }, 'password reset email failed');
+    }
+    log.info({ userId: user.id, mailerConfigured: isMailerConfigured() }, 'password reset issued');
+    res.json({ ok: true });
+    return;
+  }));
+
+  router.post('/auth/reset-password', asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as { token?: unknown; new_password?: unknown };
+    const token = String(body.token ?? '').trim();
+    const newPassword = String(body.new_password ?? '');
+    if (!token || token.length < 32) {
+      return res.status(400).json({ error: 'invalid token' });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'password too short (min 8 chars)' });
+    }
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const row = await gridBotDb.findValidPasswordResetToken(tokenHash);
+    if (!row) {
+      return res.status(400).json({ error: 'token expired or already used' });
+    }
+    const password_hash = await hashPassword(newPassword);
+    await gridBotDb.updateUserPassword(row.user_id, password_hash);
+    // Mark this token used AND invalidate any other open tokens for the
+    // same user (defense-in-depth — only one reset per request).
+    await gridBotDb.markPasswordResetTokenUsed(row.id);
+    await gridBotDb.invalidateOpenPasswordResetTokensForUser(row.user_id);
+    log.info({ userId: row.user_id }, 'password reset completed');
+    res.json({ ok: true });
+    return;
+  }));
 
   // ── GET /api/v2/metrics ────────────────────────────────────────────
   // G.1: Prometheus-compatible text metrics. BEFORE auth middleware so

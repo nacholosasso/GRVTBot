@@ -283,6 +283,15 @@ export const api = {
       hasGrvtCreds: boolean;
     }>('/auth/login', { email, password }),
 
+  forgotPassword: (email: string) =>
+    publicRequest<{ ok: true }>('/auth/forgot-password', { email }),
+
+  resetPassword: (token: string, newPassword: string) =>
+    publicRequest<{ ok: true }>('/auth/reset-password', {
+      token,
+      new_password: newPassword,
+    }),
+
   getMe: () =>
     request<{
       id: number;

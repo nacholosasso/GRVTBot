@@ -20,8 +20,8 @@ All 10/10 deployed. Structured logging (pino), per-user GRVT clients, liquidatio
 - D.2 + D.3 deployed (58 tests covering REST API + grid calculation).
 - D.1, D.4-D.9 still pending (see below).
 
-### Phase E — Dashboard Polish ✅ (8/9)
-E.1-E.8 deployed: drawdown gauge, keyboard shortcuts, optimistic UI, mobile breakpoints, modal responsiveness, fill heatmap, error toast, range picker drag handles. **E.9 (password recovery) still pending**.
+### Phase E — Dashboard Polish ✅
+E.1-E.9 done. E.9 (password recovery) ships SMTP-based reset with optional config — if SMTP env vars are blank, reset URL is logged at WARN for out-of-band delivery so self-host without SMTP still works.
 
 ### Phase F — Notifications & Alerting ✅ (5/6)
 F.1-F.4 + F.6 deployed: per-bot thresholds, liq proximity, webhook sink, muted hours, alert history. **F.5 (email) skipped — Telegram is sufficient for current users**.
@@ -59,11 +59,6 @@ All 8/8 deployed including:
 | D.8 | Dashboard component tests | `packages/dashboard/tests/` | 2h |
 | D.9 | WebSocket tests | `tests/ws.test.ts` | 1h |
 
-### Phase E (remaining)
-| # | Task | Why | Est |
-|---|------|-----|-----|
-| E.9 | **Password recovery** — "Forgot password" link on login, email-based reset token | No recovery if password lost; requires server CLI access today | 2h |
-
 ### Phase H (next-gen, all new)
 | # | Task | Why | Est |
 |---|------|-----|-----|
@@ -81,13 +76,12 @@ Plan exists at `~/.claude/plans/effervescent-sparking-lamport.md`. Deferred unti
 ## Priority order (recommended next)
 
 ```
-1. E.9 — Password recovery       (~2h, quick UX win)
-2. H.2 — Dynamic grid trailing   (~4h, high user value)
-3. H.3 — Stop-loss / take-profit (~3h, risk management)
-4. H.5 — Multi-sub-account       (~3h, schema ready)
-5. H.7 — Portfolio view          (~3h, lifts overview UX)
-6. D remainders                  (~10h, test coverage)
-7. H.6 — Backtesting             (~8h, big feature)
+1. H.2 — Dynamic grid trailing   (~4h, high user value)
+2. H.3 — Stop-loss / take-profit (~3h, risk management)
+3. H.5 — Multi-sub-account       (~3h, schema ready)
+4. H.7 — Portfolio view          (~3h, lifts overview UX)
+5. D remainders                  (~10h, test coverage)
+6. H.6 — Backtesting             (~8h, big feature)
 ```
 
 Phase I (Lumina) waits for protocol maturity. No work scheduled.

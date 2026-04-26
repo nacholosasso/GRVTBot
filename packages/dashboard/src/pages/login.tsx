@@ -55,6 +55,14 @@ export function LoginPage() {
             onChange={(e) => setPassword(e.target.value)}
             disabled={pending}
           />
+          <div className="flex justify-end">
+            <Link
+              to="/forgot-password"
+              className="text-xs text-text-muted hover:text-primary hover:underline"
+            >
+              Forgot password?
+            </Link>
+          </div>
           <Button
             variant="primary"
             type="submit"

@@ -12,6 +12,8 @@ import { BotsListPage } from './pages/bots-list';
 import { SettingsPage } from './pages/settings';
 import { LoginPage } from './pages/login';
 import { SignupPage } from './pages/signup';
+import { ForgotPasswordPage } from './pages/forgot-password';
+import { ResetPasswordPage } from './pages/reset-password';
 import { GrvtOnboardingPage } from './pages/onboarding/grvt';
 
 // Bot Detail owns the heaviest dependencies (lightweight-charts + recharts).
@@ -83,6 +85,8 @@ export default function App() {
             {/* Public auth routes — no AppShell, no ProtectedRoute */}
             <Route path="login" element={<LoginPage />} />
             <Route path="signup" element={<SignupPage />} />
+            <Route path="forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="reset-password" element={<ResetPasswordPage />} />
             <Route
               path="onboarding/grvt"
               element={

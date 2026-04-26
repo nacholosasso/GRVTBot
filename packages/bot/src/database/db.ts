@@ -704,6 +704,25 @@ export class GridBotDB {
     `);
     await this.dbRun(`CREATE INDEX IF NOT EXISTS idx_sub_accounts_user ON grvt_sub_accounts(user_id)`);
 
+    // E.9: password reset tokens. We store SHA-256 of the raw token, never
+    // the raw value — if the DB leaks, the tokens are not directly usable.
+    // Single-use (used_at) and time-bound (expires_at). On password change
+    // we mark all open tokens for that user as used so a leaked link can
+    // never be redeemed twice.
+    await this.dbRun(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER,
+        created_at INTEGER NOT NULL,
+        ip_address TEXT
+      )
+    `);
+    await this.dbRun(`CREATE INDEX IF NOT EXISTS idx_pwreset_token_hash ON password_reset_tokens(token_hash)`);
+    await this.dbRun(`CREATE INDEX IF NOT EXISTS idx_pwreset_user ON password_reset_tokens(user_id)`);
+
     // ALTER existing tables to add user_id. Wrapped in try/catch
     // because SQLite doesn't support `ADD COLUMN IF NOT EXISTS`.
     // The columns are nullable; backfill happens in ownerBootstrap().
@@ -1734,6 +1753,58 @@ export class GridBotDB {
   async countUsers(): Promise<number> {
     const row = await this.dbGet(`SELECT COUNT(*) as c FROM users`);
     return (row?.c as number) ?? 0;
+  }
+
+  async updateUserPassword(userId: number, password_hash: string): Promise<void> {
+    await this.dbRun(
+      `UPDATE users SET password_hash = ? WHERE id = ?`,
+      [password_hash, userId]
+    );
+  }
+
+  // ─── Multi-tenant: password reset tokens (E.9) ─────────────────
+
+  async insertPasswordResetToken(params: {
+    user_id: number;
+    token_hash: string;
+    expires_at: number;
+    ip_address: string | null;
+  }): Promise<number> {
+    const result = await this.dbRun(
+      `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, created_at, ip_address)
+       VALUES (?, ?, ?, ?, ?)`,
+      [params.user_id, params.token_hash, params.expires_at, Date.now(), params.ip_address]
+    );
+    return result.lastID ?? 0;
+  }
+
+  async findValidPasswordResetToken(token_hash: string): Promise<{
+    id: number;
+    user_id: number;
+    expires_at: number;
+  } | null> {
+    return await this.dbGet(
+      `SELECT id, user_id, expires_at FROM password_reset_tokens
+       WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
+      [token_hash, Date.now()]
+    );
+  }
+
+  async markPasswordResetTokenUsed(id: number): Promise<void> {
+    await this.dbRun(
+      `UPDATE password_reset_tokens SET used_at = ? WHERE id = ?`,
+      [Date.now(), id]
+    );
+  }
+
+  // Mark all open tokens for a user as used. Called when issuing a new
+  // token (so only the latest is valid) AND after a successful reset
+  // (so a stolen-but-not-yet-used link is invalidated).
+  async invalidateOpenPasswordResetTokensForUser(userId: number): Promise<void> {
+    await this.dbRun(
+      `UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL`,
+      [Date.now(), userId]
+    );
   }
 
   // ─── Multi-tenant: terms acceptances ───────────────────────────
