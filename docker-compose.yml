@@ -36,6 +36,7 @@ services:
       NODE_ENV: production
       DASHBOARD_PORT: "3848"
       LOG_LEVEL: "${LOG_LEVEL:-info}"
+      NODE_OPTIONS: "${NODE_OPTIONS:---max-old-space-size=700}"
     volumes:
       - ./data:/app/data
       - ./logs/bot:/app/logs
